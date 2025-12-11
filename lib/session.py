@@ -1,6 +1,9 @@
 import socket
 import time
 import queue
+from lib.database import Database
+
+db = Database()
 
 class VirtualSocket:
     def __init__(self):
@@ -18,34 +21,58 @@ class VirtualSocket:
 class SessionManager:
     def __init__(self):
         self.sessions = {}
-        self.next_id = 0
+        # FIX: Start counting from the last known ID in the DB
+        self.next_id = db.get_max_session_id() + 1 
 
     def add_session(self, client_socket, address, is_http=False):
-        sid = self.next_id
-        self.sessions[sid] = {
+        uid = "UNKNOWN"
+        if not is_http:
+            try:
+                client_socket.settimeout(2.0)
+                handshake = client_socket.recv(1024).decode()
+                if handshake.startswith("AUTH:"):
+                    uid = handshake.split(":")[1]
+            except: pass 
+            finally: client_socket.settimeout(None)
+
+        proto = "HTTP" if is_http else "TCP"
+        final_id = db.register_session(uid, self.next_id, address[0], proto)
+        
+        if final_id == self.next_id:
+            self.next_id += 1
+
+        self.sessions[final_id] = {
             'socket': client_socket,
             'address': address,
             'is_http': is_http,
-            'last_seen': time.time()
+            'uid': uid,
+            'status': 'Active'
         }
-        self.next_id += 1
-        return sid
+        return final_id
 
     def remove_session(self, sid):
-        """Removes a session from the list"""
         if sid in self.sessions:
-            try:
-                self.sessions[sid]['socket'].close()
+            uid = self.sessions[sid]['uid']
+            db.update_status(uid, 'Dead')
+            try: self.sessions[sid]['socket'].close()
             except: pass
             del self.sessions[sid]
 
     def list_sessions(self):
-        if not self.sessions: return "No active sessions."
-        lines = ["\nActive Sessions:", "ID   Type   IP Address", "---  ----   ----------"]
-        for sid, info in self.sessions.items():
-            sType = "HTTP" if info.get('is_http') else "TCP"
-            lines.append(f"{sid:<4} {sType:<6} {info['address'][0]}")
+        all_sessions = db.get_all_sessions()
+        if not all_sessions: return "No sessions found."
+        
+        # We now highlight the UID since that is what you will use
+        lines = ["\nSession History:", "ID   Proto   IP Address       Status   UID (Use This)", "---  -----   ---------------  ------   --------------"]
+        for sid, proto, ip, status, uid in all_sessions:
+            lines.append(f"{sid:<4} {proto:<7} {ip:<16} {status:<8} {uid}")
+        
         return "\n".join(lines)
 
-    def get_session(self, sid):
-        return self.sessions.get(sid)
+    # --- NEW HELPER FOR UUID LOOKUP ---
+    def get_session_by_uid(self, target_uid):
+        """Find an active session socket by its UUID string"""
+        for sid, info in self.sessions.items():
+            if info['uid'] == target_uid:
+                return sid, info
+        return None, None

